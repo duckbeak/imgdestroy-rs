@@ -286,13 +286,10 @@ impl ImageArray {
         let comp = ImageCompressor::from_rgb(self.image);
         self.image = ndarray::linspace::<f32>(50., 1., passes.clamp(1, 50).into())
             .map(|q| q.trunc() as u8)
-            .zip(std::iter::repeat(comp))
-            .inspect(|(q, _)| {
+            .inspect(|q| {
                 println!("Compressing with quality {q}...");
             })
-            .map(|(q, comp)| comp.compress(Some(q)))
-            .last()
-            .unwrap()
+            .fold(comp, |comp, q| comp.compress(Some(q)))
             .into();
 
         self.make_f32();

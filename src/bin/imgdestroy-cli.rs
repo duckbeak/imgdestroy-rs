@@ -30,23 +30,19 @@ fn main() {
         .expect("Could not read image")
         .into();
 
-    img = if let Some(cr) = args.color_reduction {
-        img.reduce_color(cr)
-    } else {
-        img
+    if let Some(cr) = args.color_reduction {
+        img = img.reduce_color(cr);
     }
-    .repeat_compression(args.passes);
-
-    img = if !args.nosharpen {
-        img.sharpen()
-    } else {
-        &mut img
+    if !args.nosharpen {
+        img = img.sharpen().to_owned();
     }
-    .blowout(
-        args.luma_blowout.unwrap_or_default(),
-        args.chroma_blowout.unwrap_or_default(),
-    )
-    .to_owned();
+    img = img
+        .repeat_compression(args.passes)
+        .blowout(
+            args.luma_blowout.unwrap_or_default(),
+            args.chroma_blowout.unwrap_or_default(),
+        )
+        .to_owned();
 
     image::RgbImage::from(img)
         .save(args.out_path)
