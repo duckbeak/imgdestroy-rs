@@ -26,25 +26,28 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let mut img: ImageArray = image::open(&args.in_path)
+    let sharpen_or =
+        |img: &mut ImageArray| { if !args.nosharpen { img.sharpen() } else { img } }.to_owned();
+    let reduce_or = |img: ImageArray| {
+        if let Some(cr) = args.color_reduction {
+            img.reduce_color(cr)
+        } else {
+            img
+        }
+    };
+
+    let img: ImageArray = image::open(&args.in_path)
         .expect("Could not read image")
         .into();
 
-    if let Some(cr) = args.color_reduction {
-        img = img.reduce_color(cr);
-    }
-    if !args.nosharpen {
-        img = img.sharpen().to_owned();
-    }
-    img = img
-        .repeat_compression(args.passes)
-        .blowout(
-            args.luma_blowout.unwrap_or_default(),
-            args.chroma_blowout.unwrap_or_default(),
-        )
-        .to_owned();
-
-    image::RgbImage::from(img)
-        .save(args.out_path)
-        .expect("Failed to save image");
+    image::RgbImage::from(sharpen_or(
+        sharpen_or(&mut reduce_or(img))
+            .repeat_compression(args.passes)
+            .blowout(
+                args.luma_blowout.unwrap_or_default(),
+                args.chroma_blowout.unwrap_or_default(),
+            ),
+    ))
+    .save(args.out_path)
+    .expect("Failed to save image");
 }
