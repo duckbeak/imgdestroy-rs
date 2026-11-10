@@ -1,7 +1,7 @@
-use log::info;
+use log::{info, warn};
 use ndarray::{Zip, prelude::*};
 use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
-use ndrustfft::{nddct2, nddct2_inplace, nddct3_inplace};
+use ndrustfft::{nddct2_inplace, nddct3_inplace};
 
 const BASE_LUMA_Q: [[u16; 8]; 8] = [
     [16, 11, 10, 16, 24, 40, 51, 61],
@@ -101,7 +101,7 @@ pub fn yuv2rgb(yuv: &Array3<f32>) -> Array3<f32> {
     Zip::from(&y)
         .and(&u)
         .and(&v)
-        .map_assign_into(g, |y, u, v| y - 0.334 * u - 0.714 * v + 128.);
+        .map_assign_into(g, |y, u, v| y - 0.344 * u - 0.714 * v + 128.);
     Zip::from(&y)
         .and(&u)
         .map_assign_into(b, |y, u| y + 1.772 * u + 128.);
@@ -202,10 +202,12 @@ impl ImageArray {
                 .map_inplace(|v| *v = (luma_factor * (*v - 128.)).clamp(-128., 128.) + 128.0);
         }
         if chroma_factor > 0. {
-            let arr = Zip::from(yuv.slice(s![.., .., 1..]))
-                .and(ndarray::stack![Axis(2), chroma_premult, chroma_premult].view())
-                .par_map_collect(|v, c| (c * (v - 128.)).clamp(-128., 128.) + 128.);
-            yuv.slice_mut(s![.., .., 1..]).assign(&arr);
+            Zip::from(yuv.slice_mut(s![.., .., 1]))
+                .and(&chroma_premult)
+                .for_each(|v, c| *v = (c * (*v - 128.)).clamp(-128., 128.) + 128.);
+            Zip::from(yuv.slice_mut(s![.., .., 2]))
+                .and(&chroma_premult)
+                .for_each(|v, c| *v = (c * (*v - 128.)).clamp(-128., 128.) + 128.);
         }
         self.image = yuv2rgb(&yuv);
         self
@@ -220,8 +222,8 @@ impl ImageArray {
                 .map(|mut plane| {
                     let (w, h) = (plane.width(), plane.height());
                     let top = image::DynamicImage::ImageLuma8(plane.clone())
-                        .thumbnail_exact(w - 2 * cx, h - 2 * cy);
-                    image::imageops::overlay(&mut plane, &top.to_luma8(), cx.into(), cy.into());
+                        .thumbnail_exact((w - 2 * cx).max(1), (h - 2 * cy).max(1));
+                    image::imageops::overlay(&mut plane, &top.into_luma8(), cx.into(), cy.into());
 
                     plane2array(plane)
                         .map(|plane| {
@@ -229,22 +231,21 @@ impl ImageArray {
                                 .slice_mut(s![.., .., amount.compress_c])
                                 .assign(&plane.mapv(f32::from));
                         })
-                        .unwrap_or_default();
+                        .unwrap_or_else(|e| warn!("Chroma plane conversion error: {}", e));
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|e| warn!("Chroma plane conversion error: {}", e));
         }
 
         if amount.expand_x != 0 || amount.expand_y != 0 {
+            let ex = amount.expand_x.clamp(0, (self.image.dim().1 / 2) as u32);
+            let ey = amount.expand_y.clamp(0, (self.image.dim().0 / 2) as u32);
+
             plane2img(&self.get_u8().slice(s![.., .., amount.expand_c]))
                 .map(|plane| {
                     let (w, h) = (plane.width(), plane.height());
                     let plane = image::DynamicImage::ImageLuma8(plane)
-                        .resize_exact(
-                            w + 2 * amount.expand_x,
-                            h + 2 * amount.expand_y,
-                            image::imageops::Triangle,
-                        )
-                        .crop_imm(amount.expand_x, amount.expand_y, w, h);
+                        .resize_exact(w + 2 * ex, h + 2 * ey, image::imageops::Triangle)
+                        .crop_imm(ex, ey, w, h);
 
                     plane2array(plane.into())
                         .map(|plane| {
@@ -252,9 +253,9 @@ impl ImageArray {
                                 .slice_mut(s![.., .., amount.expand_c])
                                 .assign(&plane.mapv(f32::from));
                         })
-                        .unwrap_or_default();
+                        .unwrap_or_else(|e| warn!("Chroma plane conversion error: {}", e));
                 })
-                .unwrap_or_default();
+                .unwrap_or_else(|e| warn!("Chroma plane conversion error: {}", e));
         }
         self
     }
@@ -389,7 +390,7 @@ impl ImageCompressor {
     }
 
     fn scale_quantizers(&self, factor: Option<u8>) -> (Array2<f32>, Array2<f32>) {
-        let factor: u16 = factor.unwrap_or(50).clamp(0, 100).into();
+        let factor: u16 = factor.unwrap_or(50).clamp(1, 100).into();
         let scale = u32::from(if factor < 50 {
             5000 / factor
         } else {
@@ -410,7 +411,10 @@ impl ImageCompressor {
         out: &mut ArrayViewMut2<f32>,
         quantizer: &Array2<f32>,
     ) {
-        nddct2(&(tile - 128.), out, &self.dfft_handler, 0);
+        out.assign(tile);
+        out.mapv_inplace(|tile| tile - 128.);
+
+        nddct2_inplace(out, &self.dfft_handler, 0);
         nddct2_inplace(out, &self.dfft_handler, 1);
 
         Zip::from(&mut *out)
@@ -425,8 +429,8 @@ impl ImageCompressor {
 
     fn compress_y(&mut self, quantizer: &Array2<f32>) {
         let mut y2: Array2<f32> = Array2::zeros((
-            self.shape.0 + (8 - self.shape.0 % 8),
-            self.shape.1 + (8 - self.shape.1 % 8),
+            (self.shape.0 + (8 - self.shape.0 % 8) % 8).max(8),
+            (self.shape.1 + (8 - self.shape.1 % 8) % 8).max(8),
         ));
         let mut y_padded = Array2::<f32>::zeros(y2.dim());
         y_padded
@@ -455,8 +459,8 @@ impl ImageCompressor {
 
     fn compress_uv(&mut self, quantizer: &Array2<f32>) {
         let mut uv2: Array3<f32> = Array3::zeros((
-            self.shape.0 / 2 + (8 - (self.shape.0 / 2) % 8),
-            self.shape.1 / 2 + (8 - (self.shape.1 / 2) % 8),
+            (self.shape.0 / 2 + (8 - (self.shape.0 / 2) % 8) % 8).max(16),
+            (self.shape.1 / 2 + (8 - (self.shape.1 / 2) % 8) % 8).max(16),
             2,
         ));
 
