@@ -1,3 +1,4 @@
+use log::info;
 use ndarray::{Zip, prelude::*};
 use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
 use ndrustfft::{nddct2, nddct2_inplace, nddct3_inplace};
@@ -273,9 +274,7 @@ impl ImageArray {
         let comp = ImageCompressor::from_rgb(self.get_u8());
         self.image = ndarray::linspace::<f32>(50., 1., passes.clamp(1, 50).into())
             .map(|q| q.trunc() as u8)
-            .inspect(|q| {
-                println!("Compressing with quality {q}...");
-            })
+            .inspect(|q| info!("Compressing with quality {q}"))
             .fold(comp, |comp, q| comp.compress(Some(q)))
             .into();
 

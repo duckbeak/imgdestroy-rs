@@ -3,7 +3,12 @@ use clap::Parser;
 use imgdestroy_rs::ImageArray;
 
 #[derive(Parser)]
-#[command(version, about, long_about = None)]
+#[command(
+    version,
+    about,
+    long_about = None,
+    after_help = "Log verbosity: -v debug, -vv trace; RUST_LOG overrides (e.g. RUST_LOG=warn to quiet)."
+)]
 struct Args {
     #[arg(value_name = "FILE")]
     in_path: String,
@@ -21,10 +26,22 @@ struct Args {
 
     #[arg(long)]
     nosharpen: bool,
+
+    #[arg(short, long, action = clap::ArgAction::Count)]
+    verbosity: u8,
 }
 
 fn main() {
     let args = Args::parse();
+
+    env_logger::Builder::from_env(env_logger::Env::default().default_filter_or(
+        match args.verbosity {
+            0 => "info",
+            1 => "debug",
+            _ => "trace",
+        },
+    ))
+    .init();
 
     let sharpen_or = |img: ImageArray| {
         if !args.nosharpen { img.sharpen() } else { img }
