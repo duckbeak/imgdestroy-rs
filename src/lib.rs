@@ -1,3 +1,6 @@
+//! Lossy image degradation through repeated JPEG-like compression and
+//! destruction effects.
+
 use log::{info, warn};
 use ndarray::{Zip, prelude::*};
 use ndarray_conv::{ConvExt, ConvMode, PaddingMode};
@@ -65,6 +68,7 @@ fn plane2img(array: &ArrayView2<u8>) -> Result<image::GrayImage, ImgDestroyError
     }
 }
 
+/// Converts an RGB image (H x W x 3) to YUV with BT.601 coefficients.
 pub fn rgb2yuv(rgb: &Array3<u8>) -> Array3<f32> {
     let mut yuv: Array3<f32> = Array3::default(rgb.raw_dim());
     let mut rgb: Array3<f32> = rgb.mapv(f32::from);
@@ -88,6 +92,7 @@ pub fn rgb2yuv(rgb: &Array3<u8>) -> Array3<f32> {
     yuv
 }
 
+/// Converts a YUV image (H x W x 3, U/V centered at 128) back to RGB.
 pub fn yuv2rgb(yuv: &Array3<f32>) -> Array3<f32> {
     let mut rgb: Array3<f32> = Array3::default(yuv.raw_dim());
     let mut yuv = yuv - 128.;
@@ -109,6 +114,12 @@ pub fn yuv2rgb(yuv: &Array3<f32>) -> Array3<f32> {
     rgb
 }
 
+/// Offsets and channel picks for [`ImageArray::chroma_aberrate`].
+///
+/// One channel is shrunk toward the image center and overlaid back
+/// (`compress_*`), another is scaled up and cropped back to size
+/// (`expand_*`), simulating lens chromatic aberration. Channels are indexed
+/// 0 = red, 1 = green, 2 = blue and clamped to that range.
 #[derive(Debug, Clone, Copy)]
 pub struct AberrationCoords {
     compress_x: u32,
@@ -139,6 +150,7 @@ impl AberrationCoords {
     }
 }
 
+/// An RGB image kept as an `Array3<f32>` (H x W x 3) plus chained degradation effects.
 #[derive(Debug, Clone, PartialEq, Default)]
 pub struct ImageArray {
     image: Array3<f32>,
@@ -158,6 +170,7 @@ impl ImageArray {
         self.image.clone()
     }
 
+    /// Convolves each color channel with a 3x3 sharpening kernel
     pub fn sharpen(mut self) -> Self {
         if let Some(mat) = self
             .image
@@ -178,12 +191,18 @@ impl ImageArray {
         self
     }
 
+    /// Posterizes the image by rounding each channel value to a
+    /// multiple of `2^factor`; `factor` is clamped to [0, 8].
     pub fn reduce_color(mut self, factor: u8) -> Self {
         let f: f32 = 2_u16.pow(factor.clamp(0, 8).into()).clamp(1, 255).into();
         self.image = (self.image / f).round() * f;
         self
     }
 
+    /// Amplifies luma contrast and chroma saturation in YUV space around
+    /// the midpoint 128; channels clip at 0 and 255.
+    ///
+    /// A factor of 0 leaves that component unchanged.
     pub fn blowout(mut self, luma_factor: u8, chroma_factor: u8) -> Self {
         if luma_factor == 0 && chroma_factor == 0 {
             return self;
@@ -213,6 +232,10 @@ impl ImageArray {
         self
     }
 
+    /// Shifts one channel toward the image center and another away from it,
+    /// simulating lens chromatic aberration; see [`AberrationCoords`].
+    ///
+    /// Offsets of 0 skip the corresponding operation.
     pub fn chroma_aberrate(mut self, amount: AberrationCoords) -> Self {
         if amount.compress_x != 0 || amount.compress_y != 0 {
             let cx = amount.compress_x.clamp(0, (self.image.dim().1 / 2) as u32);
@@ -260,6 +283,7 @@ impl ImageArray {
         self
     }
 
+    /// Compresses the image once with the JPEG-like codec; `None` means quality 50.
     pub fn compress(mut self, quality: Option<u8>) -> Self {
         self.image = ImageCompressor::from_rgb(self.get_u8())
             .compress(quality)
@@ -267,6 +291,8 @@ impl ImageArray {
         self
     }
 
+    /// Compresses the image `passes` times, with the quality ramping from
+    /// 50 down to 1 across the passes; 0 passes leaves the image unchanged.
     pub fn repeat_compression(mut self, passes: u8) -> Self {
         if passes == 0 {
             return self;
@@ -362,6 +388,11 @@ fn simple_unsubsample(img: &ArrayView2<f32>, factor: usize) -> Array2<f32> {
     })
 }
 
+/// A JPEG-like codec: 8x8 DCT tiles, standard JPEG quantization tables with
+/// quality scaling, and 2x chroma subsampling.
+///
+/// The image is held in YUV space (U/V centered at 128).
+/// Default quality level is 50.
 #[derive(Clone)]
 pub struct ImageCompressor {
     image: Array3<f32>,
@@ -502,6 +533,7 @@ impl ImageCompressor {
         );
     }
 
+    /// Compresses the image at the given JPEG quality, consuming self.
     pub fn compress(mut self, quality: Option<u8>) -> Self {
         let (luma_q, chroma_q) = self.scale_quantizers(quality);
 
