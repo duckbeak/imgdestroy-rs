@@ -28,13 +28,29 @@ const BASE_CHROMA_Q: [[u16; 8]; 8] = [
 pub enum ImgDestroyError {
     BufferTooSmallError,
     MemoryLayoutError,
+    ShapeError,
 }
 
-fn plane2array(img: image::GrayImage) -> Result<Array2<u8>, ndarray::ShapeError> {
+impl std::fmt::Display for ImgDestroyError {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::BufferTooSmallError => write!(f, "Buffer too small!"),
+            Self::MemoryLayoutError => {
+                write!(f, "Cannot obtain array slice, nonstandard memory layout")
+            }
+            Self::ShapeError => write!(f, "Cannot convert vector to array, wrong shape"),
+        }
+    }
+}
+
+impl std::error::Error for ImgDestroyError {}
+
+fn plane2array(img: image::GrayImage) -> Result<Array2<u8>, ImgDestroyError> {
     Array2::from_shape_vec(
         (img.height() as usize, img.width() as usize),
         img.into_raw(),
     )
+    .map_err(|_e| ImgDestroyError::ShapeError)
 }
 
 fn plane2img(array: &ArrayView2<u8>) -> Result<image::GrayImage, ImgDestroyError> {
@@ -92,7 +108,7 @@ pub fn yuv2rgb(yuv: &Array3<f32>) -> Array3<f32> {
     rgb
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone, Copy)]
 pub struct AberrationCoords {
     compress_x: u32,
     compress_y: u32,
@@ -210,7 +226,7 @@ impl ImageArray {
                         .map(|plane| {
                             self.image
                                 .slice_mut(s![.., .., amount.compress_c])
-                                .assign(&plane.mapv(f32::from))
+                                .assign(&plane.mapv(f32::from));
                         })
                         .unwrap_or_default();
                 })
@@ -233,7 +249,7 @@ impl ImageArray {
                         .map(|plane| {
                             self.image
                                 .slice_mut(s![.., .., amount.expand_c])
-                                .assign(&plane.mapv(f32::from))
+                                .assign(&plane.mapv(f32::from));
                         })
                         .unwrap_or_default();
                 })
@@ -329,7 +345,11 @@ fn simple_subsample(mat: &ArrayView2<f32>, factor: usize) -> Array2<f32> {
     let mat = mat
         .conv(
             &array![[0.25, 0.25], [0.25, 0.25]],
-            ConvMode::Same,
+            // Same anchor = bottom left, not top right
+            ConvMode::Explicit {
+                padding: [[0, 1], [0, 1]],
+                strides: [1, 1],
+            },
             PaddingMode::Replicate,
         )
         .unwrap_or(mat.to_owned());
@@ -371,14 +391,17 @@ impl ImageCompressor {
 
     fn scale_quantizers(&self, factor: Option<u8>) -> (Array2<f32>, Array2<f32>) {
         let factor: u16 = factor.unwrap_or(50).clamp(0, 100).into();
-        let scale = if factor < 50 {
+        let scale = u32::from(if factor < 50 {
             5000 / factor
         } else {
             200 - 2 * factor
-        } as u32;
+        });
 
-        let scaler =
-            |mat: &Array2<u16>| ((scale * mat.mapv(u32::from) + 50) / 100).mapv(|v| v as f32);
+        let scaler = |mat: &Array2<u16>| {
+            ((scale * mat.mapv(u32::from) + 50) / 100)
+                .mapv(|v| v as f32)
+                .clamp(1., f32::MAX)
+        };
         (scaler(&self.luma_q), scaler(&self.chroma_q))
     }
 
@@ -403,8 +426,8 @@ impl ImageCompressor {
 
     fn compress_y(&mut self, quantizer: &Array2<f32>) {
         let mut y2: Array2<f32> = Array2::zeros((
-            self.shape.0 + 8 - self.shape.0 % 8,
-            self.shape.1 + 8 - self.shape.1 % 8,
+            self.shape.0 + (8 - self.shape.0 % 8),
+            self.shape.1 + (8 - self.shape.1 % 8),
         ));
         let mut y_padded = Array2::<f32>::zeros(y2.dim());
         y_padded
@@ -433,8 +456,8 @@ impl ImageCompressor {
 
     fn compress_uv(&mut self, quantizer: &Array2<f32>) {
         let mut uv2: Array3<f32> = Array3::zeros((
-            self.shape.0 / 2 + 8 - (self.shape.0 / 2) % 8,
-            self.shape.1 / 2 + 8 - (self.shape.1 / 2) % 8,
+            self.shape.0 / 2 + (8 - (self.shape.0 / 2) % 8),
+            self.shape.1 / 2 + (8 - (self.shape.1 / 2) % 8),
             2,
         ));
 
