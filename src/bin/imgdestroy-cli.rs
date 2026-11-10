@@ -26,8 +26,9 @@ struct Args {
 fn main() {
     let args = Args::parse();
 
-    let sharpen_or =
-        |img: &mut ImageArray| { if !args.nosharpen { img.sharpen() } else { img } }.to_owned();
+    let sharpen_or = |img: ImageArray| {
+        if !args.nosharpen { img.sharpen() } else { img }
+    };
     let reduce_or = |img: ImageArray| {
         if let Some(cr) = args.color_reduction {
             img.reduce_color(cr)
@@ -41,7 +42,7 @@ fn main() {
         .into();
 
     image::RgbImage::from(sharpen_or(
-        sharpen_or(&mut reduce_or(img))
+        sharpen_or(reduce_or(img))
             .repeat_compression(args.passes)
             .blowout(
                 args.luma_blowout.unwrap_or_default(),
