@@ -490,8 +490,8 @@ impl ImageCompressor {
 
     fn compress_uv(&mut self, quantizer: &Array2<f32>) {
         let mut uv2: Array3<f32> = Array3::zeros((
-            (self.shape.0 / 2 + (8 - (self.shape.0 / 2) % 8) % 8).max(16),
-            (self.shape.1 / 2 + (8 - (self.shape.1 / 2) % 8) % 8).max(16),
+            (self.shape.0.div_ceil(2) + (8 - self.shape.0.div_ceil(2) % 8) % 8).max(16),
+            (self.shape.1.div_ceil(2) + (8 - self.shape.1.div_ceil(2) % 8) % 8).max(16),
             2,
         ));
 
